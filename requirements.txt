@@ -1,0 +1,7 @@
+openai>=1.0.0
+duckduckgo-search>=3.9.0
+rich>=13.0.0
+flask>=3.0.0
+flask-sock>=0.7
+pydantic>=2.0.0
+python-dotenv>=1.0.0

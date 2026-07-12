@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Agent Orchestrator</title>
+    <style>
+        :root {
+            --primary: #2b6cb0;
+            --bg: #f7fafc;
+            --card: #fff;
+            --text: #2d3748;
+            --border: #e2e8f0;
+            --success: #38a169;
+            --warning: #d69e2e;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+        header { background: var(--primary); color: white; padding: 1.5rem; text-align: center; }
+        header h1 { font-size: 1.5rem; }
+        .container { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+        .input-group { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+        .input-group input { flex: 1; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 6px; font-size: 1rem; }
+        .input-group button { padding: 0.75rem 1.5rem; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+        .input-group button:hover { opacity: 0.9; }
+        .status-bar { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+        .status-pill { padding: 0.35rem 0.75rem; border-radius: 999px; background: var(--card); border: 1px solid var(--border); font-size: 0.85rem; }
+        .status-pill.active { background: var(--primary); color: white; }
+        .status-pill.done { background: var(--success); color: white; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+        .card h3 { font-size: 1rem; margin-bottom: 0.5rem; color: var(--primary); }
+        .log-entry { display: flex; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+        .log-entry:last-child { border-bottom: none; }
+        .log-agent { width: 90px; font-weight: 600; color: var(--primary); flex-shrink: 0; }
+        .log-action { flex: 1; }
+        .log-detail { color: #718096; font-size: 0.85rem; }
+        .log-time { width: 70px; text-align: right; color: #a0aec0; font-size: 0.8rem; flex-shrink: 0; }
+        #report-output { white-space: pre-wrap; font-family: inherit; }
+        .review-box { background: #f0fff4; border-left: 4px solid var(--success); padding: 1rem; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Multi-Agent Orchestrator</h1>
+        <p style="opacity:0.9;font-size:0.9rem;">Manager · Researcher · Writer · Reviewer 协作研究</p>
+    </header>
+    <div class="container">
+        <div class="input-group">
+            <input type="text" id="query" placeholder="输入研究问题，例如：2024年AI Agent发展趋势...">
+            <button onclick="startTask()">开始研究</button>
+        </div>
+
+        <div class="status-bar" id="status-bar" style="display:none;">
+            <div class="status-pill" id="pill-planning">规划</div>
+            <div class="status-pill" id="pill-researching">研究</div>
+            <div class="status-pill" id="pill-writing">撰写</div>
+            <div class="status-pill" id="pill-reviewing">审查</div>
+        </div>
+
+        <div class="card" id="logs-card" style="display:none;">
+            <h3>协作日志</h3>
+            <div id="logs"></div>
+        </div>
+
+        <div class="card" id="report-card" style="display:none;">
+            <h3>研究报告</h3>
+            <div id="report-output"></div>
+            <div class="review-box" id="review-box" style="display:none;"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentTaskId = null;
+        let evtSource = null;
+
+        function startTask() {
+            const query = document.getElementById('query').value.trim();
+            if (!query) return alert('请输入研究问题');
+
+            // UI 重置
+            document.getElementById('status-bar').style.display = 'flex';
+            document.getElementById('logs-card').style.display = 'block';
+            document.getElementById('report-card').style.display = 'none';
+            document.getElementById('logs').innerHTML = '';
+            document.getElementById('report-output').innerHTML = '';
+            document.getElementById('review-box').style.display = 'none';
+            resetPills();
+
+            // 创建任务
+            fetch('/api/tasks', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({query})
+            })
+            .then(r => r.json())
+            .then(data => {
+                currentTaskId = data.task_id;
+                connectSSE();
+            });
+        }
+
+        function resetPills() {
+            ['planning','researching','writing','reviewing'].forEach(s => {
+                const el = document.getElementById('pill-'+s);
+                el.className = 'status-pill';
+            });
+        }
+
+        function updatePills(status) {
+            const map = {
+                'planning': 'planning',
+                'researching': 'researching',
+                'researching_done': 'researching',
+                'writing': 'writing',
+                'writing_done': 'writing',
+                'reviewing': 'reviewing',
+                'completed': 'reviewing',
+            };
+            const active = map[status];
+            if (!active) return;
+            const order = ['planning','researching','writing','reviewing'];
+            const idx = order.indexOf(active);
+            order.forEach((s, i) => {
+                const el = document.getElementById('pill-'+s);
+                if (i < idx) el.className = 'status-pill done';
+                else if (i === idx) el.className = 'status-pill active';
+                else el.className = 'status-pill';
+            });
+        }
+
+        function connectSSE() {
+            if (evtSource) evtSource.close();
+            evtSource = new EventSource('/api/stream');
+            evtSource.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'heartbeat') return;
+                renderTask(data);
+            };
+        }
+
+        function renderTask(task) {
+            updatePills(task.status);
+
+            const logsDiv = document.getElementById('logs');
+            logsDiv.innerHTML = '';
+            (task.logs || []).forEach(log => {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                const ts = log.timestamp ? log.timestamp.substring(11, 19) : '';
+                entry.innerHTML = `
+                    <div class="log-agent">${log.agent}</div>
+                    <div class="log-action">${log.action}</div>
+                    <div class="log-detail">${log.detail || ''}</div>
+                    <div class="log-time">${ts}</div>
+                `;
+                logsDiv.appendChild(entry);
+            });
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+
+            if (task.report && ['writing_done','reviewing','completed','needs_revision'].includes(task.status)) {
+                document.getElementById('report-card').style.display = 'block';
+                document.getElementById('report-output').textContent = task.report;
+            }
+
+            if (task.review_result && task.status === 'completed') {
+                const rb = document.getElementById('review-box');
+                rb.style.display = 'block';
+                const r = task.review_result;
+                rb.innerHTML = `<strong>审查结果</strong><br>总体评分: ${r.overall_score || 'N/A'}/10 | 结论: ${r.verdict || 'N/A'}<br>${r.summary || ''}`;
+            }
+        }
+    </script>
+</body>
+</html>
